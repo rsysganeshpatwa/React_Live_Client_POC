@@ -10,6 +10,7 @@ import {
   RemoteTrackPublication,
   AudioTrack,
 } from "livekit-client";
+import { Grid, Paper, Typography } from "@material-ui/core";
 interface LocationState {
   url: string;
   token: string;
@@ -19,75 +20,94 @@ interface LocationState {
 const MeetingRoomPage: React.FC = () => {
   const location = useLocation();
   const { url, token, isAudioEnabled, isVideoEnabled } = location.state;
-  const [room, setRoom] = useState<Room | null>(null);
+
+  const [room, setRoom] = useState<Room>();
+
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [localParticipant, setLocalParticipant] = useState<Participant>();
-  const [rerenderRemoteParticipants, setRerenderRemoteParticipants] = useState<boolean>(false); // Add state for rerendering remote participants
+
+ // useEffect(() => {}, [participants]);
 
   useEffect(() => {
-    try {
-      const connectToRoom = async () => {
-        const room = new Room();
-        setRoom(room);
-        room.on("participantConnected", (participant: RemoteParticipant) => {
-          console.log("participantConnected", participant);
-          setRerenderRemoteParticipants(prev => !prev); // Trigger rerender of remote participants
-        });
-        room.on("participantDisconnected", (participant: RemoteParticipant) => {
-          console.log("participantDisconnected", participant);
-          setParticipants((prev) =>
-            prev.filter((p) => p.sid !== participant.sid)
-          );
-        });
-        room.on(
-          "trackSubscribed",
-          (track: Track, publication, participant: Participant) => {
-            if (track.kind === Track.Kind.Video) {
-              console.log("room trackSubscribed", participant);
-              setParticipants((prev) => {
-                // Check if the participant is already in the list
-                if (!prev.find((p) => p.sid === participant.sid)) {
-                  // If not, add the participant to the list
-                  return [...prev, participant];
-                } else {
-                  // If yes, simply return the previous state
-                  return [...prev];
-                }
-              });
-            }
-          }
-        );
-        room.on("localTrackPublished", () => {
-          console.log(
-            "connected",
-            room.localParticipant.videoTrackPublications
-          );
-          if (
-            Array.from(room.localParticipant.videoTrackPublications.values())
-              .length > 0
-          ) {
-            setLocalParticipant(room.localParticipant);
-          } 
-        });
-      
-        await room.connect(url, token);
-        if (isAudioEnabled) {
-          await room.localParticipant.setMicrophoneEnabled(true);
-        }
-        if (isVideoEnabled) {
-          await room.localParticipant.setCameraEnabled(true);
+    const connectToRoom = async () => {
+      const room = new Room();
+      await room.connect('https://embedded-poc.rsystems.com/api/livekit', token);
+
+      if (isAudioEnabled) {
+        await room.localParticipant.setMicrophoneEnabled(true);
+      }
+      if (isVideoEnabled) {
+        await room.localParticipant.setCameraEnabled(true);
+      }
+      setRoom(room);
+
+      const handleTrackSubscribed = (
+        track: Track,
+        participant: Participant
+      ) => {
+        const videoElement = document.getElementById(
+          `video-${participant.name}`
+        ) as HTMLVideoElement;
+        console.log(`handleTrackSubscribed videoElement ${videoElement}`);
+        if (videoElement) {
+          videoElement.srcObject = new MediaStream([track.mediaStreamTrack]);
         }
       };
-      connectToRoom();
-    } catch (error) {
-      console.error("Error connecting to room:", error);
-    }
-    return () => {
-      if (room) {
-        room.disconnect();
-      }
+
+      const handleParticipantConnected = (participant: Participant) => {
+        setParticipants((prevParticipants) => {
+          if (
+            !prevParticipants.some(
+              (prevParticipant) => prevParticipant.name === participant.name
+            )
+          ) {
+            return [...prevParticipants, participant];
+          } else {
+            return prevParticipants;
+          }
+        });
+
+        participant.trackPublications.forEach((publication) => {
+          if (publication.track) {
+            handleTrackSubscribed(publication.track, participant);
+          }
+        });
+      
+        participant.on('trackSubscribed', (track) => handleTrackSubscribed(track, participant));
+      };
+
+      // Handle existing participants
+      // room.remoteParticipants.forEach(handleParticipantConnected);
+
+      // Listen for new participants joining
+      room.on("participantConnected", handleParticipantConnected);
+
+      room.on(
+        "trackSubscribed",
+        (track: Track, publication, participant: Participant) => {
+          if (track.kind === Track.Kind.Video) {
+            console.log("room trackSubscribed", participant);
+            setParticipants((prev) => [...prev]);
+            if (publication.track) {
+              handleTrackSubscribed(publication.track, participant);
+            }
+          }
+        }
+      );
+      
+        handleParticipantConnected(room.localParticipant);
+      
+        room.remoteParticipants.forEach(handleParticipantConnected);
+  
+     
     };
-  }, [url, token, isAudioEnabled, isVideoEnabled]);
+
+    connectToRoom(); // Cleanup on component unmount
+
+    return () => {
+      room?.disconnect();
+    };
+  }, [token, url]);
+
   const handleMuteUnmute = (trackType: "audio" | "video") => {
     if (room) {
       const localParticipant = room.localParticipant as LocalParticipant;
@@ -106,14 +126,6 @@ const MeetingRoomPage: React.FC = () => {
     }
   };
 
-  useEffect(() => { // Add useEffect to rerender remote participants
-    if (room && rerenderRemoteParticipants) {
-      console.log(rerenderRemoteParticipants)
-      setParticipants((prev) => [...prev]);
-      setRerenderRemoteParticipants(false);
-    }
-
-  },[rerenderRemoteParticipants]);
   const renderParticipantVideo = (participant: Participant) => {
     const videoTracks = Array.from(participant.trackPublications.values())[1];
     const audioTracks = Array.from(participant.trackPublications.values())[0];
@@ -142,7 +154,7 @@ const MeetingRoomPage: React.FC = () => {
   };
   return (
     <div>
-      <div style={{ display: "flex", flexWrap: "wrap" }}>
+      {/* <div style={{ display: "flex", flexWrap: "wrap" }}>
         {localParticipant && (
           <div
             style={{
@@ -157,21 +169,46 @@ const MeetingRoomPage: React.FC = () => {
           </div>
         )}
         {participants.map((participant) => (
-        <div
-          key={participant.sid}
-          style={{
-            width: 400,
-            height: 200,
-            margin: 5,
-            backgroundColor: "#fff", // Change color to white
-          }}
-        >
-          <span style={{ color: "#fff" }}>{participant.identity}</span>
-          {renderParticipantVideo(participant)}
-        </div>
-      ))}
-      </div>
-
+          <div
+            key={participant.name}
+            style={{
+              width: 400,
+              height: 200,
+              margin: 5,
+              backgroundColor: "#fff", // Change color to white
+            }}
+          >
+            <span style={{ color: "#fff" }}>{participant.identity}</span>
+            {renderParticipantVideo(participant)}
+          </div>
+        ))}
+      </div> */}
+       
+      <Grid container spacing={2}>
+             
+        {participants.map((participant) => (
+          <Grid item xs={12} sm={6} md={4} lg={3} key={participant.name}>
+                     
+            <Paper elevation={3} style={{ padding: 10 }}>
+                         
+              <Typography variant="h6" gutterBottom>
+                             {participant.name}
+                           
+              </Typography>
+                         
+              <video
+                id={`video-${participant.name}`}
+                autoPlay
+                muted={false}
+                style={{ width: "100%", height: "auto" }}
+              />
+                       
+            </Paper>
+                   
+          </Grid>
+        ))}
+           
+      </Grid>
       <div style={{ marginTop: "20px" }}>
         <button
           style={{
@@ -205,20 +242,8 @@ const MeetingRoomPage: React.FC = () => {
         >
           Disconnect
         </button>
-        <button
-          style={{
-            backgroundColor: "lightblue",
-            padding: "10px",
-            borderRadius: "5px",
-            marginLeft: "10px",
-          }}
-          onClick={() => setRerenderRemoteParticipants(prev => !prev)} // Add button to trigger rerender of remote participants
-        >
-          Rerender Remote Participants
-        </button>
       </div>
     </div>
   );
 };
 export default MeetingRoomPage;
-
